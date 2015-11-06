@@ -1,0 +1,4 @@
+name: match-expression-transpiler
+dependencies:
+  analyzer:
+    git: https://github.com/Pajn/dart-analyzer.git
