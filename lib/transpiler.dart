@@ -1,62 +1,141 @@
 library transpiler;
 
+import 'dart:math';
+
 import 'package:analyzer/analyzer.dart';
-import 'package:path/path.dart' as pathTools;
-import 'dart:io';
+import 'package:analyzer/src/generated/java_core.dart';
 
-List<CompilationUnit> parseDartFiles(String path) {
-  var files = _findDartFiles(path);
-  return _parseDartFiles(files);
+transpile(Iterable<CompilationUnit> compilationUnits) {
+  final files = compilationUnits.map((compilationUnit) {
+    final writer = new PrintStringWriter();
+    new Transpiler(writer).visitCompilationUnit(compilationUnit);
+    return writer.toString();
+  });
+
+  files.forEach(print);
 }
 
-/// Finds all Dart files in [path] recursively
-List<String> _findDartFiles(String path) {
-  var uri = new Uri.file(pathTools.absolute(path));
-  var files = [];
+class Variable {
+  final String type;
+  final String name;
+  final String fromVariable;
 
-  try {
-    var fileList = new Directory.fromUri(uri).listSync();
-    fileList.forEach((entity) {
-      var type = FileSystemEntity.typeSync(entity.path);
+  Variable(this.type, this.name, this.fromVariable);
+}
 
-      if (type == FileSystemEntityType.DIRECTORY) {
-        if (pathTools.basename(entity.path) == 'packages' ||
-            (pathTools.basename(entity.path) != 'test' &&
-                fileList.any((file) =>
-                    pathTools.basename(entity.path) == 'pubspec.yaml'))) return;
-        files.addAll(_findDartFiles(entity.path));
-      } else if (type != FileSystemEntityType.FILE) {
-        return;
+class Transpiler extends ToSourceVisitor {
+  final characters = 'abcdefghijklmnopqrstuvxyz0123456789'.split('');
+  final PrintWriter _writer;
+  var variableName;
+  List<Variable> variablesToDeclare;
+
+  Transpiler(PrintWriter writer)
+      : _writer = writer,
+        super(writer);
+
+  visitTypeTestPattern(TypeTestPattern node) {
+    _writer.print('$variableName is ');
+    node.type.accept(this);
+    variablesToDeclare.add(new Variable(
+        node.type.toString(), node.identifier.toString(), variableName));
+  }
+
+  visitRangePattern(RangePattern node) {
+    _writer.print('$variableName >= ');
+    node.startRange.accept(this);
+    _writer.print(' && ');
+    _writer.print('$variableName <= ');
+    node.endRange.accept(this);
+  }
+
+  visitPatternGuard(PatternGuard node) {
+    _writer.print('if (');
+    node.condition.accept(this);
+    _writer.print(') {');
+  }
+
+  visitMatchExpression(MatchExpression node) {
+    final rand = new Random();
+    variableName = r'_$';
+    for (var i = 0; i < 10; i++) {
+      variableName += characters[rand.nextInt(characters.length)];
+    }
+    _writer.print('($variableName) {');
+    node.clauses.accept(this);
+    _writer.print('} (');
+    node.expression.accept(this);
+    _writer.print(')');
+  }
+
+  visitMatchClause(MatchClause node) {
+    variablesToDeclare = [];
+    _writer.print('if (');
+    int size = node.patterns.length;
+    for (int i = 0; i < size; i++) {
+      if (i > 0) {
+        _writer.print(' || ');
       }
+      node.patterns[i].accept(this);
+    }
+    _writer.print(') {');
 
-      if (pathTools.extension(entity.path) != '.dart') {
-        return;
+    variablesToDeclare = variablesToDeclare.fold([],
+        (List<Variable> list, Variable variable) {
+      if (!list.any((v) => v.name == variable.name)) {
+        list.add(variable);
       }
-
-      files.add(entity.absolute.path);
+      return list;
     });
-  } on FileSystemException catch (e) {
-    if (e.message == 'Directory listing failed') {
-      return [path];
+    for (var variable in variablesToDeclare) {
+      _writer.print(variable.type);
+      _writer.print(' ');
+      _writer.print(variable.name);
+      _writer.print(' = ');
+      _writer.print(variable.fromVariable);
+      _writer.print(';');
     }
-    throw e;
+
+    if (node.patternGuard != null) {
+      node.patternGuard.accept(this);
+    }
+    _writer.print('return ');
+    node.armExpression.accept(this);
+    if (node.patternGuard != null) {
+      _writer.print('}');
+    }
+    _writer.print('}');
   }
 
-  return files;
-}
+  visitLiteralPattern(LiteralPattern node) {
+    _writer.print('$variableName == ');
+    node.literal.accept(this);
+  }
 
-/// Parses all Dart files into ASTs.
-List<CompilationUnit> _parseDartFiles(List<String> paths) {
-  var compilationUnits = [];
-  for (var path in paths) {
-    // Capture errors if the repo contains code that isn't valid Dart
+  visitIdentifierPattern(IdentifierPattern node) {
+    _writer.print('true');
+    variablesToDeclare
+        .add(new Variable('var', node.identifier.toString(), variableName));
+  }
+
+  visitDestructuredListPattern(DestructuredListPattern node) {
+    _writer.print('$variableName is List && ');
+    _writer.print('$variableName.length == ${node.elements.length}');
+    var oldVariableName = variableName;
     try {
-      if (FileSystemEntity.typeSync(path) == FileSystemEntityType.FILE) {
-        compilationUnits.add(parseDartFile(path));
+      var index = 0;
+      for (var element in node.elements) {
+        variableName = '$oldVariableName[$index]';
+        _writer.print(' && ');
+        element.accept(this);
+        index += 1;
       }
-    } catch (_) {
-      print(_);
+    } finally {
+      variableName = oldVariableName;
     }
   }
-  return compilationUnits;
+
+  visitConstantValuePattern(ConstantValuePattern node) {
+    _writer.print('$variableName == ');
+    node.identifier.accept(this);
+  }
 }

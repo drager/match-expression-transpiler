@@ -8,3 +8,7 @@ var name = match (x) {
   Fruit.apple  => 'apple';
   Fruit.banana => 'banana';
 };
+
+main() {
+  print(name);
+}
